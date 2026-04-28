@@ -1,0 +1,22 @@
+# No subir variables de entorno con contraseñas reales
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Editor dirs
+.vscode/
+
+# Logs y temporales
+*.log
+
+# Grabaciones locales
+recordings/*.ts
+
+# OS files
+.DS_Store
+
+
+

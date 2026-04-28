@@ -1,0 +1,45 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: mipc_server
+    restart: unless-stopped
+    ports:
+      - "8554:8554"   # RTSP (VLC / Otros)
+      - "8888:8888"   # HLS (Tablet Nueva / Web)
+    environment:
+      - MTX_PROTOCOLS=tcp
+      - TZ=America/Guatemala
+
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mipc_worker
+    restart: unless-stopped
+    group_add:
+      - video
+      - render
+    # Cargar variables de entorno desde ./.env
+    env_file:
+      - ./.env
+    ports:
+      - "5900:5900"   # VNC (Tablet Vieja / Toshiba)
+      - "8080:8080"   # MJPEG (Tablet Vieja / TinyCam)
+    volumes:
+      - ./bridge/bridge.py:/app/bridge.py
+      - ./config:/app/config
+      - ./assets:/app/assets
+      - ./recordings:/app/grabaciones
+    environment:
+      - PYTHONUNBUFFERED=1
+    devices:
+      # Nodos de aceleración de hardware (V4L2M2M)
+      - "/dev/video10:/dev/video10"
+      - "/dev/video11:/dev/video11"
+      - "/dev/video12:/dev/video12"
+      # Gráficos y Memoria Compartida (GPU)
+      - "/dev/dri:/dev/dri"
+      - "/dev/vcsm-cma:/dev/vcsm-cma"
+      - "/dev/vchiq:/dev/vchiq"
+      # Acceso al Framebuffer real
+      - "/dev/fb0:/dev/fb0"
