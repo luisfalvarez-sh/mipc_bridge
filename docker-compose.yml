@@ -30,6 +30,7 @@ services:
       - ./config:/app/config
       - ./assets:/app/assets
       - ./recordings:/app/grabaciones
+      - ./logs:/app/logs
     environment:
       - PYTHONUNBUFFERED=1
     devices:

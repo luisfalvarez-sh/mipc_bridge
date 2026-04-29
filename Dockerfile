@@ -25,7 +25,10 @@ WORKDIR /app
 RUN mkdir -p /app/config /app/logs /app/grabaciones
 
 # 4. Copia de archivos (Asegúrate de tenerlos en la carpeta /opt/mipc-bridge/)
-COPY bridge/bridge.py /app/bridge.py
+COPY bridge/ /app/bridge/
+RUN if [ ! -f /app/bridge/__init__.py ]; then touch /app/bridge/__init__.py; fi
+# Ensure legacy entrypoint compatibility: copy main script to /app/bridge.py
+RUN cp /app/bridge/bridge.py /app/bridge.py
 COPY scripts/init_host.sh /app/init_host.sh
 COPY config/xorg_gpu.conf /app/config/xorg_gpu.conf
 

@@ -6,3 +6,6 @@
 
 # Grabaciones locales
 recordings/*.ts
+
+# Pycache
+__pycache__/
