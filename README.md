@@ -2,6 +2,12 @@
 
 mipc-bridge es un puente ligero para integrar cámaras MIPC con un servidor de medios (`mediamtx`) y servir la señal a clientes modernos y antiguos.
 
+Todo el procesamiento y la negociación del token RTSP/RTMP es gracias a la librería de pan-maruda: mipc-camera-client-python
+
+https://github.com/pan-maruda/mipc-camera-client-python
+
+Muchas gracias por su trabajo. 
+
 Este proyecto está adaptado para Raspberry Pi 4, corriendo PXVIRT (Proxmox) y Docker sobre LXC. 
 
 Salidas principales:
