@@ -2,6 +2,8 @@
 
 mipc-bridge es un puente ligero para integrar cámaras MIPC con un servidor de medios (`mediamtx`) y servir la señal a clientes modernos y antiguos.
 
+Este proyecto está adaptado para Raspberry Pi 4, corriendo PXVIRT (Proxmox) y Docker sobre LXC. 
+
 Salidas principales:
 
 - RTSP/HLS para clientes modernos (vía `mediamtx`).
