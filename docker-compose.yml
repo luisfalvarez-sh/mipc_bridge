@@ -8,10 +8,6 @@ services:
       - "8888:8888"   # HLS (Tablet Nueva / Web)
     environment:
       - MTX_PROTOCOLS=tcp
-      - MTX_HLS=no
-      - MTX_WEBRTC=no
-      - MTX_SRT=no
-      - MTX_RTMP=no
       - TZ=America/Guatemala
 
   bridge:
