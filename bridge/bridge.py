@@ -400,6 +400,20 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def get_request(self):
+        sock, addr = super().get_request()
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if hasattr(socket, 'TCP_KEEPIDLE'):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 5)
+            if hasattr(socket, 'TCP_KEEPINTVL'):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 3)
+            if hasattr(socket, 'TCP_KEEPCNT'):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+        except Exception as e:
+            logger.debug(f"No se pudieron aplicar opciones TCP KeepAlive: {e}")
+        return sock, addr
+
 class MJPEGRequestHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # Desactivar logs verbosos de cada petición HTTP
