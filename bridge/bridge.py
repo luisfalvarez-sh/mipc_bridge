@@ -15,6 +15,8 @@ try:
 except ImportError:
     from process_manager import ProcessManager
 import socket
+import http.server
+import socketserver
 import logging
 import threading
 import signal
@@ -268,35 +270,128 @@ def iniciar_maestro():
     w = manager.start('maestro', cmd)
     PROCESOS["maestro"] = w
 
-def loop_servidor_mjpeg():
-    """
-    SERVIDOR MJPEG (Tablet Vieja):
-    Lee del stream RTSP local generado por el Maestro.
-    Si la tablet falla, este proceso se reinicia sin afectar al Maestro.
-    """
-    logger.info("[MJPEG] Servidor 8080 listo. Esperando conexión de tablet vieja...")
+# ==========================================
+#  SERVIDOR HTTP MJPEG MULTICLIENTE (v31.10)
+# ==========================================
+LATEST_JPEG_FRAME = None
+FRAME_LOCK = threading.Lock()
+FRAME_EVENT = threading.Event()
+
+def _ffmpeg_mjpeg_generator():
+    """Hilo de fondo que ejecuta FFmpeg para decodificar RTSP y emitir fotogramas JPEG en memoria."""
+    global LATEST_JPEG_FRAME
+    logger.info("[MJPEG-Gen] Iniciando generador de fotogramas JPEG...")
+    first_frame_logged = False
+
     while not shutdown_event.is_set():
-        # Esperamos a que el RTSP local tenga señal antes de intentar codificar MJPEG
         if _wait_rtsp_ready(max_wait_s=10, sleep_s=1):
             cmd = [
                 'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_MJPEG_LOGLEVEL,
                 '-rtsp_transport', 'tcp',
-                '-c:v', 'h264_v4l2m2m', '-i', RTSP_LOCAL,
+                '-i', RTSP_LOCAL,
                 '-vf', 'scale=640:360,fps=10',
-                '-c:v', 'mjpeg', '-q:v', '10',
+                '-c:v', 'mjpeg', '-q:v', '8',
                 '-an',
-                '-f', 'mpjpeg', '-listen', '1', 'http://0.0.0.0:8080'
+                '-f', 'image2pipe', '-'
             ]
             try:
-                w = manager.start('mjpeg', cmd)
-                # wait for process to finish or shutdown
-                while w and w.poll() is None and not shutdown_event.is_set():
-                    time.sleep(0.5)
-                logger.info("[MJPEG] Sesión cerrada. Reiniciando escucha...")
-                manager.stop('mjpeg')
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+                buffer = bytearray()
+
+                while not shutdown_event.is_set() and proc.poll() is None:
+                    chunk = proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    buffer.extend(chunk)
+                    while True:
+                        a = buffer.find(b'\xff\xd8')
+                        b = buffer.find(b'\xff\xd9')
+                        if a != -1 and b != -1 and b > a:
+                            jpg = bytes(buffer[a:b+2])
+                            buffer = buffer[b+2:]
+                            with FRAME_LOCK:
+                                LATEST_JPEG_FRAME = jpg
+                            if not first_frame_logged:
+                                logger.info("[MJPEG-Gen] ¡Primer fotograma JPEG capturado con éxito!")
+                                first_frame_logged = True
+                        else:
+                            break
+
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
             except Exception as e:
-                logger.error(f"Error: {e}")
+                logger.error(f"[MJPEG-Gen] Error en proceso FFmpeg: {e}")
         time.sleep(2)
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+class MJPEGRequestHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Desactivar logs verbosos de cada petición HTTP
+        pass
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Connection', 'close')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Connection', 'close')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+
+        last_sent = None
+        while not shutdown_event.is_set():
+            with FRAME_LOCK:
+                frame = LATEST_JPEG_FRAME
+            if frame and frame != last_sent:
+                try:
+                    self.wfile.write(b'--frame\r\n')
+                    self.wfile.write(b'Content-Type: image/jpeg\r\n')
+                    self.wfile.write(f'Content-Length: {len(frame)}\r\n\r\n'.encode('ascii'))
+                    self.wfile.write(frame)
+                    self.wfile.write(b'\r\n')
+                    self.wfile.flush()
+                    last_sent = frame
+                except (BrokenPipeError, ConnectionResetError, socket.error):
+                    break
+            time.sleep(0.05)
+
+def loop_servidor_mjpeg():
+    """
+    SERVIDOR MJPEG MULTICLIENTE (Android / Tablets Viejas / TinyCam):
+    Lanza el generador de fotogramas en segundo plano y atiende múltiples clientes HTTP simultáneamente.
+    """
+    gen_thread = threading.Thread(target=_ffmpeg_mjpeg_generator, daemon=True)
+    gen_thread.start()
+
+    logger.info("[MJPEG] Servidor HTTP Multicliente listo en http://0.0.0.0:8080")
+    try:
+        server = ThreadedHTTPServer(('0.0.0.0', 8080), MJPEGRequestHandler)
+        server.timeout = 1.0
+        while not shutdown_event.is_set():
+            server.handle_request()
+        server.server_close()
+    except Exception as e:
+        logger.error(f"[MJPEG] Error en servidor HTTP: {e}")
 
 def lanzar_fuente(origen, es_url=True):
     aniquilar("fuente")
