@@ -3,15 +3,16 @@ import time
 import subprocess
 import errno
 import sys
+_here = os.path.dirname(os.path.abspath(__file__))
+_parent = os.path.dirname(_here)
+if _parent not in sys.path:
+    sys.path.insert(0, _parent)
+if _here not in sys.path:
+    sys.path.insert(0, _here)
+
 try:
     from bridge.process_manager import ProcessManager
-except Exception:
-    # Cuando el script se ejecuta como /app/bridge.py (no como paquete),
-    # 'bridge' no es un paquete. Añadimos el directorio actual al sys.path
-    # y probamos la importación local.
-    _here = os.path.dirname(__file__)
-    if _here not in sys.path:
-        sys.path.insert(0, _here)
+except ImportError:
     from process_manager import ProcessManager
 import socket
 import logging
@@ -19,26 +20,6 @@ import threading
 import signal
 from logging.handlers import RotatingFileHandler
 from mipc_camera_client import MipcCameraClient
-
-# ==========================================
-#      SISTEMA DE LOGS (v31.10 - STABLE)
-# ==========================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger("MIPC_BRIDGE")
-# Añadir fichero de logs rotativo en /app/logs/bridge.log
-try:
-    os.makedirs('/app/logs', exist_ok=True)
-    fh = RotatingFileHandler('/app/logs/bridge.log', maxBytes=5 * 1024 * 1024, backupCount=3)
-    fh.setLevel(logging.INFO)
-    fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-    logger.addHandler(fh)
-except Exception:
-    # Si no se puede crear el handler, seguir con la salida a stdout
-    logger.debug('No se pudo crear RotatingFileHandler en /app/logs')
 
 # Guardamos el descriptor del FIFO para poder cerrarlo en el shutdown
 FIFO_KEEPER = None
@@ -48,7 +29,7 @@ shutdown_event = threading.Event()
 manager = None
 
 # ==========================================
-#      CONFIGURACIÓN (adaptada a .env y rutas nuevas)
+#      CONFIGURACIÓN Y VARIABLES DE ENTORNO
 # ==========================================
 CONFIG_DIR = "/app/config"
 CONFIG_ENV = os.getenv("CONFIG_ENV", "/app/.env")
@@ -65,16 +46,13 @@ def reload_env():
                 load_dotenv(path, override=True)
                 break
             except Exception as e:
-                logger.warning(f"No se pudo cargar dotenv desde {path}: {e}")
-
-reload_env()
+                pass
 
 def get_env_var(key, default=None):
     """Obtiene una variable de entorno limpiando comentarios en línea (#...) y espacios en blanco."""
     val = os.getenv(key)
     if val is None:
         return default
-    # Quitar comentario en línea si existe (ej. "false #comentario")
     val = val.split('#')[0].strip()
     return val if val != "" else default
 
@@ -88,9 +66,73 @@ def get_env_bool(key, default=False):
 def load_setting(key, default=None, mandatory=False):
     val = get_env_var(key, default)
     if mandatory and (val is None or val == ""):
-        logger.error(f"Missing mandatory config '{key}'")
+        print(f"Missing mandatory config '{key}'", file=sys.stderr)
         sys.exit(1)
     return val
+
+# Cargar .env antes de inicializar el sistema de logs
+reload_env()
+
+# ==========================================
+#      SISTEMA DE LOGS CON ROTACIÓN
+# ==========================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("MIPC_BRIDGE")
+
+try:
+    log_dir = get_env_var('LOG_DIR', '/app/logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    try:
+        max_bytes_mb = float(get_env_var('LOG_MAX_SIZE_MB', '5'))
+    except (ValueError, TypeError):
+        max_bytes_mb = 5.0
+    
+    try:
+        backup_count = int(get_env_var('LOG_BACKUP_COUNT', '3'))
+    except (ValueError, TypeError):
+        backup_count = 3
+
+    max_bytes = int(max_bytes_mb * 1024 * 1024)
+    log_file_path = os.path.join(log_dir, 'bridge.log')
+
+    fh = RotatingFileHandler(log_file_path, maxBytes=max_bytes, backupCount=backup_count)
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    logger.addHandler(fh)
+except Exception as e:
+    logger.debug(f'No se pudo crear RotatingFileHandler en /app/logs: {e}')
+
+def limpiar_logs_antiguos():
+    """Elimina archivos de logs rotados antiguos en /app/logs si superan LOG_RETENTION_DAYS."""
+    try:
+        dias_str = get_env_var('LOG_RETENTION_DAYS', get_env_var('DIAS_RETENCION', '7'))
+        dias = int(dias_str)
+        if dias <= 0:
+            return
+        log_dir = get_env_var('LOG_DIR', '/app/logs')
+        if not os.path.exists(log_dir):
+            return
+
+        limite_sec = time.time() - (dias * 86400)
+        borrados = 0
+        for fname in os.listdir(log_dir):
+            if fname.startswith('bridge.log.') or (fname.endswith('.log') and fname != 'bridge.log'):
+                fpath = os.path.join(log_dir, fname)
+                try:
+                    if os.path.isfile(fpath) and os.path.getmtime(fpath) < limite_sec:
+                        os.remove(fpath)
+                        borrados += 1
+                except Exception as e:
+                    logger.warning(f"No se pudo eliminar log antiguo {fpath}: {e}")
+        if borrados > 0:
+            logger.info(f"[*] Retención de logs ({dias} días): {borrados} archivo(s) de log rotado(s) eliminado(s).")
+    except Exception as e:
+        logger.error(f"Error en limpieza de logs por retención: {e}")
 
 def limpiar_grabaciones_antiguas():
     """Elimina archivos .ts en /app/grabaciones con antigüedad mayor a DIAS_RETENCION."""
@@ -362,8 +404,9 @@ def main():
         logger.info("[*] GRABAR_VIDEO desactivado en .env. El recorder NO se iniciará.")
         aniquilar('recorder')
 
-    # Ejecutar limpieza de grabaciones por DIAS_RETENCION
+    # Ejecutar limpieza de grabaciones y logs por retención
     limpiar_grabaciones_antiguas()
+    limpiar_logs_antiguos()
 
     lanzar_fuente(PLACEHOLDER_PATH, es_url=False)
     is_camera_active = False
@@ -374,6 +417,7 @@ def main():
             loop_count += 1
             if loop_count % 720 == 0:
                 limpiar_grabaciones_antiguas()
+                limpiar_logs_antiguos()
 
             if not _is_running('maestro'):
                 iniciar_maestro()

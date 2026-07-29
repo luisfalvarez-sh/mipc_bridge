@@ -1,13 +1,20 @@
-# No subir variables de entorno con contraseñas reales
+# Variables de entorno
 .env
 
 # Logs y temporales
 *.log
 logs/
+*.swp
+*.tmp
 
 # Grabaciones locales
 recordings/*.ts
 
-# Pycache
+# Python compilation
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
 
+# OS / Editor files
+.DS_Store

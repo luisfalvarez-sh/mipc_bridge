@@ -15,4 +15,4 @@ for DEV in "${DEVICES[@]}"; do
 done
 
 # Ejecutar el puente
-python3 -u /app/bridge.py
+python3 -u /app/bridge/bridge.py

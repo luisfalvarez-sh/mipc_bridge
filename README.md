@@ -1,113 +1,153 @@
-# mipc-bridge
+# mipc-bridge (v31.10)
 
-mipc-bridge es un puente ligero para integrar cámaras MIPC con un servidor de medios (`mediamtx`) y servir la señal a clientes modernos y antiguos.
+`mipc-bridge` es un puente ligero y resiliente de alto rendimiento diseñado para integrar cámaras IP del ecosistema **MIPC** con un servidor de medios moderno ([MediaMTX](https://github.com/bluenviron/mediamtx)) y servir la señal de video simultáneamente a clientes modernos (RTSP/HLS) y dispositivos legacy (MJPEG sobre HTTP).
 
-Todo el procesamiento y la negociación del token RTSP/RTMP es gracias a la librería de pan-maruda: mipc-camera-client-python
+Está adaptado y optimizado para funcionar en plataformas **Raspberry Pi 4**, corriendo sobre **PXVIRT (Proxmox LXC)** o **Docker Standalone** con aceleración de hardware por GPU (VideoCore 6 / V4L2).
 
-https://github.com/pan-maruda/mipc-camera-client-python
+---
 
-Muchas gracias por su trabajo. 
+## 🛠️ Arquitectura del Sistema y Flujo de Datos
 
-Este proyecto está adaptado para Raspberry Pi 4, corriendo PXVIRT (Proxmox) y Docker sobre LXC. 
+```mermaid
+flowchart TD
+    subgraph Camara ["Cámara IP MIPC"]
+        CAM["Cámara MIPC (Puerto 7010)"]
+    end
 
-Salidas principales:
+    subgraph BridgeWorker ["Contenedor bridge (mipc_worker)"]
+        CLIENT["MipcCameraClient (Token / Login)"]
+        FF_SRC["FFmpeg Fuente\n(RTMP / reconnecting.mp4)"]
+        FIFO["Named Pipe FIFO\n(/tmp/mipc_fifo)"]
+        FF_MST["FFmpeg Maestro\n(Copia Directa H.264)"]
+        FF_MJPEG["FFmpeg MJPEG Server\n(Puerto 8080)"]
+        FF_REC["FFmpeg Recorder\n(/app/grabaciones/*.ts)"]
+        LOGS["RotatingFileHandler\n(/app/logs/bridge.log)"]
+    end
 
-- RTSP/HLS para clientes modernos (vía `mediamtx`).
-- MJPEG (HTTP) para tablets/cliente antiguos (puerto 8080).
+    subgraph MediaMTXServer ["Contenedor mediamtx (mipc_server)"]
+        MTX["MediaMTX Server"]
+    end
 
-Componentes clave:
+    subgraph Clientes ["Clientes Finales"]
+        CLI_RTSP["Clientes RTSP (VLC, NVR, etc.)\n:8554"]
+        CLI_HLS["Clientes HLS / Web / Tablets Nuevas\n:8888"]
+        CLI_OLD["Tablets Antiguas / TinyCam\n:8080 (MJPEG)"]
+    end
 
-- `bridge/bridge.py`: worker principal en Python — gestiona procesos ffmpeg, reconexión, FIFO y grabación.
-- `bridge/process_manager.py`: gestor de subprocesos seguro (start/stop, drenado de pipes, terminación por pgid).
-- `docker-compose.yml`: define servicios `mediamtx` y `bridge`.
-- `assets/reconnecting.mp4`: vídeo fallback cuando la cámara no está disponible.
-- `recordings/` y `logs/`: mounts en host para segmentos y logs.
+    CAM -->|Autenticación MIPC| CLIENT
+    CLIENT -->|URL RTMP| FF_SRC
+    FF_SRC -->|MPEG-TS Stream| FIFO
+    FIFO --> FF_MST
+    FF_MST -->|RTSP TCP| MTX
+    MTX -->|RTSP :8554| CLI_RTSP
+    MTX -->|HLS :8888| CLI_HLS
+    MTX -->|RTSP Local| FF_MJPEG
+    MTX -->|RTSP Local| FF_REC
+    FF_MJPEG -->|HTTP MJPEG :8080| CLI_OLD
+```
 
-Estado: funcional — contiene mejoras de estabilidad aplicadas en Abril 2026 (ProcessManager, comprobación RTSP antes de arrancar MJPEG/recorder, opciones configurables de ffmpeg).
+### Principales Funcionalidades:
+- **Doble motor de retransmisión:**
+  - **Maestro RTSP/HLS:** Transmisión de alta definición 1080p sin pérdida de calidad (copia directa H.264).
+  - **Servidor MJPEG Integrado (Puerto 8080):** Servidor HTTP reentrante para clientes antiguos (como TinyCam Pro o tablets legacy).
+- **Fallback Automático (Sin señal):** Cuando la cámara se desconecta o pierde la red, el sistema cambia instantáneamente a un video en bucle continuo (`assets/reconnecting.mp4`). En cuanto la cámara responde, conmuta de nuevo a la señal en vivo sin reiniciar todo el stack.
+- **Grabación Continua por Segmentos:** Si se habilita `GRABAR_VIDEO=true`, graba segmentos `.ts` de duración configurable en `/app/grabaciones`.
+- **Rotación y Retención Automática de Logs y Grabaciones:**
+  - Archivos de log rotativos configurables por tamaño (`LOG_MAX_SIZE_MB`) y número de copias (`LOG_BACKUP_COUNT`).
+  - Limpieza automática periódica de grabaciones y logs antiguos según `DIAS_RETENCION` y `LOG_RETENTION_DAYS`.
 
-## Requisitos
+---
 
-- Docker & Docker Compose (recomendado).
-- ffmpeg (incluido en la imagen Docker).
-- Para ejecución local: Python 3.11 y `mipc-camera-client`.
+## 📁 Estructura del Proyecto
 
-## Despliegue con Docker Compose
+```
+mipc-bridge/
+├── .env                    # Variables de entorno con credenciales (ignorado en Git)
+├── .env.example            # Plantilla de configuración con variables documentadas
+├── .dockerignore           # Exclusión de contexto de build de Docker
+├── .gitignore              # Filtro para control de versiones
+├── Dockerfile              # Imagen Docker (Python 3.11, FFmpeg, librerías V4L2/GPU)
+├── docker-compose.yml      # Definición de servicios (mediamtx y bridge)
+├── assets/
+│   └── reconnecting.mp4    # Video de espera cuando la cámara se desconecta
+├── bridge/
+│   ├── __init__.py         # Paquete Python bridge
+│   ├── bridge.py           # Worker principal (gestión de streams, riconexión, retención de logs)
+│   └── process_manager.py  # Gestor seguro de subprocesos FFmpeg (aislamiento por pgid)
+├── config/
+│   └── xorg_gpu.conf       # Configuración Xorg para GPU VideoCore 6 / DRI3
+├── logs/                   # Directorio montado para logs rotativos (bridge.log)
+├── recordings/             # Directorio montado para grabaciones continuas (.ts)
+└── scripts/
+    └── init_host.sh        # Script entrypoint (asigna permisos a nodos de GPU)
+```
 
-Desde la raíz del proyecto:
+---
+
+## ⚙️ Configuración (`.env`)
+
+Copia la plantilla de ejemplo para crear tu archivo `.env`:
+
+```bash
+cp .env.example .env
+```
+
+### Tabla de Variables Configurables
+
+| Variable | Valor por Defecto | Descripción |
+| :--- | :--- | :--- |
+| `CAM_IP` | **Requerido** | Dirección IP de la cámara MIPC en la red local. |
+| `CAM_USER` | **Requerido** | Usuario de acceso a la cámara. |
+| `CAM_PASS` | **Requerido** | Contraseña de la cámara. |
+| `CAM_PORT` | `7010` | Puerto de control de la cámara MIPC. |
+| `GRABAR_VIDEO` | `false` | Activa (`true`) o desactiva (`false`) la grabación continua. |
+| `DIAS_RETENCION` | `7` | Días de retención para autolimpieza de grabaciones `.ts`. |
+| `MINUTOS_SEGMENTO` | `15` | Duración en minutos de cada segmento de video grabado. |
+| `LOG_MAX_SIZE_MB` | `5` | Tamaño máximo por archivo de log (MB) antes de rotar. |
+| `LOG_BACKUP_COUNT` | `3` | Número de archivos de respaldo rotativos a conservar (`bridge.log.1`, etc.). |
+| `LOG_RETENTION_DAYS`| `7` | Días de retención para eliminar logs rotados antiguos. |
+| `FFMPEG_LOGLEVEL` | `error` | Nivel de verbosidad de FFmpeg para el proceso fuente y maestro. |
+| `FFMPEG_MJPEG_LOGLEVEL`| `error` | Nivel de verbosidad para la emisión MJPEG. |
+
+---
+
+## 🚀 Despliegue con Docker Compose
+
+Desde la raíz del proyecto, ejecuta:
 
 ```bash
 docker compose up -d --build
 ```
 
-Ver logs:
+### Verificación de Estado y Logs:
 
 ```bash
+# Ver logs en tiempo real del worker
 docker compose logs -f bridge
-docker logs -f mipc_worker
+
+# Ver contenido del archivo de logs con rotación en el host
+tail -f logs/bridge.log
 ```
-
-## Variables de configuración (.env)
-
-Crear `.env` en la raíz con al menos las credenciales de la cámara. Ejemplo mínimo:
-
-```ini
-CAM_IP=10.10.10.110
-CAM_USER=usuario
-CAM_PASS=contraseña
-CAM_PORT=7010
-GRABAR_VIDEO=true
-MINUTOS_SEGMENTO=15
-FFMPEG_LOGLEVEL=error
-FFMPEG_MJPEG_LOGLEVEL=quiet
-FFMPEG_RW_TIMEOUT=5000000  # opcional: sólo si tu build de ffmpeg lo soporta
-```
-
-Notas:
-
-- `GRABAR_VIDEO=true` habilita el `recorder` (segmentación en `/app/grabaciones`).
-- `FFMPEG_LOGLEVEL` y `FFMPEG_MJPEG_LOGLEVEL` pueden setearse a `info` o `debug` para diagnóstico.
-
-## Flujo de trabajo y arquitectura
-
-- El worker crea `/tmp/mipc_fifo`.
-- `fuente` (ffmpeg) toma RTMP/RTSP o `assets/reconnecting.mp4` y escribe MPEG-TS al FIFO.
-- `maestro` (ffmpeg) lee del FIFO y publica por RTSP en `mediamtx`.
-- `mjpeg` (ffmpeg) lee el RTSP local y sirve MJPEG en `http://0.0.0.0:8080`.
-- `recorder` (opcional) graba segmentos `.ts` en `/app/grabaciones`.
-
-El `ProcessManager` lanza procesos en nuevos grupos, drena stdout/stderr y permite terminación limpia por `pgid`.
-
-## Logs y grabaciones
-
-- Logs del worker en host: `./logs/bridge.log` (rotating file handler).
-- Grabaciones en host: `./recordings/*.ts`.
-
-## Diagnóstico rápido
-
-- Errores como `non-existing PPS 0 referenced` o `decode_slice_header error` suelen indicar frames dañados en la fuente RTMP; prueba a capturar 5s desde dentro del contenedor para validar:
-
-```bash
-docker compose exec -T bridge bash -lc "python - <<'PY'
-from mipc_camera_client import MipcCameraClient
-import os
-c = MipcCameraClient(os.getenv('CAM_IP'))
-c.login(os.getenv('CAM_USER'), os.getenv('CAM_PASS'))
-print(c.get_rtmp_stream())
-PY"
-
-docker compose exec -T bridge ffmpeg -y -nostdin -loglevel error -i rtmp://***REDACTED*** -t 5 -c copy /tmp/rtmp_test.ts && ls -l /tmp/rtmp_test.ts
-```
-
-- Para más información, sube `FFMPEG_LOGLEVEL=info` y reinicia.
-
-## Buenas prácticas
-
-- No subir `.env` con credenciales. Mantén un `.env.example` sin secretos.
-- Considera ejecutar el contenedor como usuario no-root en producción.
-
-## Contribuir
-
-- Abre issues con descripción y logs. Los PRs deben incluir pruebas o pasos de validación.
 
 ---
-Actualizado: Abril 2026 — incluye mejoras de estabilidad y diagnóstico.
+
+## 🔍 Diagnóstico y Pruebas Rápidas
+
+Si deseas probar la conexión directa con la cámara y verificar el stream RTMP devuelto por `mipc-camera-client-python`:
+
+```bash
+docker compose exec -T bridge python3 -c "
+import os
+from mipc_camera_client import MipcCameraClient
+c = MipcCameraClient(os.getenv('CAM_IP'))
+c.login(os.getenv('CAM_USER'), os.getenv('CAM_PASS'))
+print('RTMP Stream URL:', c.get_rtmp_stream())
+"
+```
+
+---
+
+## 🔒 Créditos y Licencia
+
+* **Librería MIPC:** Integración de protocolo MIPC basada en [mipc-camera-client-python](https://github.com/pan-maruda/mipc-camera-client-python) de `pan-maruda`.
+* **Licencia:** MIT License (Ver [LICENSE](file:///opt/mipc-bridge/LICENSE)).

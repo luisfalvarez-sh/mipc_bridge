@@ -1,0 +1,25 @@
+# Git
+.git
+.gitignore
+
+# Python compilation & environment
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# Logs and runtime data
+logs/
+recordings/
+*.log
+
+# Environment variables
+.env
+
+# Editor & temporary files
+*.swp
+*.tmp
+.DS_Store
