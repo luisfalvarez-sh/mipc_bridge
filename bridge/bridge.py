@@ -287,62 +287,79 @@ def _ffmpeg_mjpeg_generator():
         with CLIENT_LOCK:
             has_clients = ACTIVE_CLIENTS > 0
 
-        if has_clients:
-            if _wait_rtsp_ready(max_wait_s=5, sleep_s=0.5):
-                reload_env()
-                res = get_env_var('MJPEG_RES', '640x360')
-                fps = get_env_var('MJPEG_FPS', '10')
-                quality = get_env_var('MJPEG_QUALITY', '8')
-                scale_filter = res.replace('x', ':') if 'x' in res else res
+        if not has_clients:
+            time.sleep(1)
+            continue
 
-                cmd = [
-                    'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_MJPEG_LOGLEVEL,
-                    '-rtsp_transport', 'tcp',
-                    '-c:v', 'h264_v4l2m2m', '-i', RTSP_LOCAL,
-                    '-vf', f'scale={scale_filter},fps={fps}',
-                    '-c:v', 'mjpeg', '-q:v', str(quality),
-                    '-an',
-                    '-f', 'image2pipe', '-'
-                ]
+        if not _wait_rtsp_ready(max_wait_s=5, sleep_s=0.5):
+            time.sleep(2)
+            continue
+
+        reload_env()
+        res = get_env_var('MJPEG_RES', '640x360')
+        fps = get_env_var('MJPEG_FPS', '10')
+        quality = get_env_var('MJPEG_QUALITY', '8')
+        scale_filter = res.replace('x', ':') if 'x' in res else res
+
+        # fps antes de scale para reducir trabajo de escalado al 33% + fast_bilinear
+        cmd = [
+            'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_MJPEG_LOGLEVEL,
+            '-rtsp_transport', 'tcp',
+            '-i', RTSP_LOCAL,
+            '-vf', f'fps={fps},scale={scale_filter}:flags=fast_bilinear',
+            '-c:v', 'mjpeg', '-q:v', str(quality),
+            '-an',
+            '-f', 'image2pipe', '-'
+        ]
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True
+            )
+            buffer = bytearray()
+            logger.info(f"[MJPEG-Gen] Activando FFmpeg On-Demand (Res: {res}, FPS: {fps}, Quality: {quality})...")
+
+            while not shutdown_event.is_set() and proc.poll() is None:
+                with CLIENT_LOCK:
+                    if ACTIVE_CLIENTS == 0:
+                        logger.info("[MJPEG-Gen] 0 clientes activos. Deteniendo FFmpeg para ahorrar CPU.")
+                        break
+
+                chunk = proc.stdout.read(4096)
+                if not chunk:
+                    break
+                buffer.extend(chunk)
+                while True:
+                    a = buffer.find(b'\xff\xd8')
+                    b = buffer.find(b'\xff\xd9')
+                    if a != -1 and b != -1 and b > a:
+                        jpg = bytes(buffer[a:b+2])
+                        buffer = buffer[b+2:]
+                        with FRAME_LOCK:
+                            LATEST_JPEG_FRAME = jpg
+                    else:
+                        break
+
+        except Exception as e:
+            logger.error(f"[MJPEG-Gen] Error en subproceso FFmpeg: {e}")
+        finally:
+            if proc:
                 try:
-                    proc = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True
-                    )
-                    buffer = bytearray()
-                    logger.info(f"[MJPEG-Gen] Iniciando FFmpeg GPU (Res: {res}, FPS: {fps}, Quality: {quality})...")
+                    stderr_out = ""
+                    if proc.stderr:
+                        stderr_out = proc.stderr.read().decode(errors='ignore')
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                    if proc.returncode not in (0, None, -15, -9) and stderr_out:
+                        logger.warning(f"[MJPEG-Gen] FFmpeg finalizó con código {proc.returncode}: {stderr_out.strip()[:200]}")
+                except Exception:
+                    pass
 
-                    while not shutdown_event.is_set() and proc.poll() is None:
-                        with CLIENT_LOCK:
-                            if ACTIVE_CLIENTS == 0:
-                                logger.info("[MJPEG-Gen] 0 clientes conectados. Deteniendo FFmpeg para ahorrar CPU.")
-                                break
-
-                        chunk = proc.stdout.read(4096)
-                        if not chunk:
-                            break
-                        buffer.extend(chunk)
-                        while True:
-                            a = buffer.find(b'\xff\xd8')
-                            b = buffer.find(b'\xff\xd9')
-                            if a != -1 and b != -1 and b > a:
-                                jpg = bytes(buffer[a:b+2])
-                                buffer = buffer[b+2:]
-                                with FRAME_LOCK:
-                                    LATEST_JPEG_FRAME = jpg
-                            else:
-                                break
-
-                    try:
-                        proc.terminate()
-                        proc.wait(timeout=2)
-                    except Exception:
-                        pass
-                except Exception as e:
-                    logger.error(f"[MJPEG-Gen] Error en proceso FFmpeg: {e}")
-        time.sleep(1)
+        # PREVENIR SPIN-LOOP: siempre dormir al menos 2 segundos si el proceso finaliza
+        time.sleep(2)
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
