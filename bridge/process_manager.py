@@ -64,6 +64,9 @@ class ProcessManager:
             if not w or w.proc is None:
                 return
             proc = w.proc
+            if proc.poll() is not None:
+                self._procs[name] = None
+                return
             try:
                 pgid = os.getpgid(proc.pid)
                 self.logger.info(f"ProcessManager: terminating pgid={pgid} for '{name}'")

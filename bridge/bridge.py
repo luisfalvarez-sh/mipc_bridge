@@ -51,24 +51,73 @@ manager = None
 #      CONFIGURACIÓN (adaptada a .env y rutas nuevas)
 # ==========================================
 CONFIG_DIR = "/app/config"
-CONFIG_ENV = "/app/.env"
+CONFIG_ENV = os.getenv("CONFIG_ENV", "/app/.env")
 FIFO_PATH = "/tmp/mipc_fifo"
 PLACEHOLDER_PATH = "/app/assets/reconnecting.mp4"
 
-# Cargar `.env` del contenedor si existe.
-try:
-    from dotenv import load_dotenv
-    if os.path.exists(CONFIG_ENV):
-        load_dotenv(CONFIG_ENV)
-except Exception:
-    pass
+def reload_env():
+    """Carga o recarga el archivo .env si existe, sobrescribiendo variables en os.environ."""
+    candidates = [CONFIG_ENV, "./.env", "/app/.env", os.path.join(os.path.dirname(__file__), "../.env")]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(path, override=True)
+                break
+            except Exception as e:
+                logger.warning(f"No se pudo cargar dotenv desde {path}: {e}")
+
+reload_env()
+
+def get_env_var(key, default=None):
+    """Obtiene una variable de entorno limpiando comentarios en línea (#...) y espacios en blanco."""
+    val = os.getenv(key)
+    if val is None:
+        return default
+    # Quitar comentario en línea si existe (ej. "false #comentario")
+    val = val.split('#')[0].strip()
+    return val if val != "" else default
+
+def get_env_bool(key, default=False):
+    """Obtiene una variable de entorno parseada limpia como booleano."""
+    val = get_env_var(key)
+    if val is None:
+        return default
+    return val.lower() in ('1', 'true', 'yes', 'on')
 
 def load_setting(key, default=None, mandatory=False):
-    val = os.getenv(key, default)
+    val = get_env_var(key, default)
     if mandatory and (val is None or val == ""):
         logger.error(f"Missing mandatory config '{key}'")
         sys.exit(1)
     return val
+
+def limpiar_grabaciones_antiguas():
+    """Elimina archivos .ts en /app/grabaciones con antigüedad mayor a DIAS_RETENCION."""
+    try:
+        dias_str = get_env_var('DIAS_RETENCION', '7')
+        dias = int(dias_str)
+        if dias <= 0:
+            return
+        grabaciones_dir = '/app/grabaciones'
+        if not os.path.exists(grabaciones_dir):
+            return
+
+        limite_sec = time.time() - (dias * 86400)
+        borrados = 0
+        for fname in os.listdir(grabaciones_dir):
+            if fname.endswith('.ts'):
+                fpath = os.path.join(grabaciones_dir, fname)
+                try:
+                    if os.path.isfile(fpath) and os.path.getmtime(fpath) < limite_sec:
+                        os.remove(fpath)
+                        borrados += 1
+                except Exception as e:
+                    logger.warning(f"No se pudo eliminar grabacion antigua {fpath}: {e}")
+        if borrados > 0:
+            logger.info(f"[*] Retención ({dias} días): {borrados} archivo(s) antiguo(s) eliminado(s).")
+    except Exception as e:
+        logger.error(f"Error en limpieza de grabaciones por retención: {e}")
 
 CAM_IP   = load_setting('CAM_IP', mandatory=True)
 CAM_USER = load_setting('CAM_USER', mandatory=True)
@@ -78,11 +127,11 @@ CAM_PORT = int(load_setting('CAM_PORT', default=7010))
 RTSP_HOST = "mediamtx"
 RTSP_LOCAL = f"rtsp://{RTSP_HOST}:8554/1"
 
-FFMPEG_LOGLEVEL = os.getenv('FFMPEG_LOGLEVEL', 'error')
-FFMPEG_MJPEG_LOGLEVEL = os.getenv('FFMPEG_MJPEG_LOGLEVEL', 'quiet')
-FFMPEG_RW_TIMEOUT = os.getenv('FFMPEG_RW_TIMEOUT')
+FFMPEG_LOGLEVEL = get_env_var('FFMPEG_LOGLEVEL', 'error')
+FFMPEG_MJPEG_LOGLEVEL = get_env_var('FFMPEG_MJPEG_LOGLEVEL', 'quiet')
+FFMPEG_RW_TIMEOUT = get_env_var('FFMPEG_RW_TIMEOUT')
 
-PROCESOS = {"maestro": None, "fuente": None, "recorder": None}
+PROCESOS = {"maestro": None, "fuente": None, "recorder": None, "mjpeg": None}
 
 def _is_running(name):
     """Return True if process 'name' is currently running."""
@@ -271,10 +320,8 @@ def main():
     mjpeg_thread = threading.Thread(target=loop_servidor_mjpeg, daemon=True)
     mjpeg_thread.start()
     # Iniciar recorder si está habilitado en .env
-    try:
-        GRABAR_VIDEO = os.getenv('GRABAR_VIDEO', 'false').lower() in ('1', 'true', 'yes')
-    except Exception:
-        GRABAR_VIDEO = False
+    reload_env()
+    GRABAR_VIDEO = get_env_bool('GRABAR_VIDEO', default=False)
 
     if GRABAR_VIDEO:
         def _start_recorder_when_ready():
@@ -283,7 +330,7 @@ def main():
             except Exception:
                 logger.warning('No se pudo asegurar /app/grabaciones')
 
-            seg_min = int(os.getenv('MINUTOS_SEGMENTO', '15'))
+            seg_min = int(get_env_var('MINUTOS_SEGMENTO', '15'))
             seg_time = max(10, seg_min * 60)
 
             # Esperar hasta que RTSP del maestro esté disponible
@@ -311,12 +358,23 @@ def main():
 
         t = threading.Thread(target=_start_recorder_when_ready, daemon=True)
         t.start()
+    else:
+        logger.info("[*] GRABAR_VIDEO desactivado en .env. El recorder NO se iniciará.")
+        aniquilar('recorder')
+
+    # Ejecutar limpieza de grabaciones por DIAS_RETENCION
+    limpiar_grabaciones_antiguas()
 
     lanzar_fuente(PLACEHOLDER_PATH, es_url=False)
     is_camera_active = False
 
+    loop_count = 0
     while True:
         try:
+            loop_count += 1
+            if loop_count % 720 == 0:
+                limpiar_grabaciones_antiguas()
+
             if not _is_running('maestro'):
                 iniciar_maestro()
 

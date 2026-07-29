@@ -31,6 +31,7 @@ services:
       - ./assets:/app/assets
       - ./recordings:/app/grabaciones
       - ./logs:/app/logs
+      - ./.env:/app/.env
     environment:
       - PYTHONUNBUFFERED=1
     devices:
