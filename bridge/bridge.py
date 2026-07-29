@@ -446,11 +446,15 @@ def lanzar_fuente(origen, es_url=True):
             cmd += ['-rw_timeout', str(FFMPEG_RW_TIMEOUT)]
         cmd += ['-i', origen, '-c:v', 'copy', '-an']
     else:
-        # Use -re to read the placeholder at realtime and normalize timestamps
-        cmd += ['-re', '-use_wallclock_as_timestamps', '1', '-fflags', '+genpts', '-stream_loop', '-1', '-i', origen, '-c:v', 'copy', '-an']
+        # Use -re and +genpts to loop placeholder video seamlessly with monotonic timestamps
+        cmd += ['-re', '-stream_loop', '-1', '-i', origen, '-fflags', '+genpts+igndts', '-c:v', 'copy', '-an']
     cmd += ['-f', 'mpegts', FIFO_PATH]
     w = manager.start('fuente', cmd)
     PROCESOS["fuente"] = w
+
+    # Iniciar / reiniciar Maestro para enganchar los datos frescos del FIFO
+    time.sleep(1)
+    iniciar_maestro()
 
 def main():
     logger.info("=== MIPC BRIDGE v31.10 THE INDEPENDENT DUAL ENGINE ===")
@@ -492,11 +496,7 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
-    # 1. El Maestro arranca la señal principal
-    iniciar_maestro()
-    time.sleep(2)
-
-    # 2. El servidor MJPEG corre en paralelo leyendo del Maestro
+    # 1. El servidor MJPEG corre en paralelo
     mjpeg_thread = threading.Thread(target=loop_servidor_mjpeg, daemon=True)
     mjpeg_thread.start()
     # Iniciar recorder si está habilitado en .env
