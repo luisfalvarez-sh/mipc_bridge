@@ -291,12 +291,13 @@ def _ffmpeg_mjpeg_generator():
             quality = get_env_var('MJPEG_QUALITY', '8')
             scale_filter = res.replace('x', ':') if 'x' in res else res
 
-            # fps antes de scale para reducir trabajo de escalado al 33% + fast_bilinear
+            # GPU V4L2 M2M hardware decoder + fps antes de scale + fast_bilinear
             cmd = [
                 'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_MJPEG_LOGLEVEL,
                 '-rtsp_transport', 'tcp',
                 '-fflags', '+genpts+igndts',
                 '-analyzeduration', '1000000', '-probesize', '1000000',
+                '-c:v', 'h264_v4l2m2m',
                 '-i', RTSP_LOCAL,
                 '-vf', f'fps={fps},scale={scale_filter}:flags=fast_bilinear',
                 '-c:v', 'mjpeg', '-q:v', str(quality),
