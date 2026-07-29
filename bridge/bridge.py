@@ -298,19 +298,25 @@ def _ffmpeg_mjpeg_generator():
 
         reload_env()
         res = get_env_var('MJPEG_RES', '640x360')
-        fps = get_env_var('MJPEG_FPS', '10')
+        fps = get_env_var('MJPEG_FPS', '5')
         quality = get_env_var('MJPEG_QUALITY', '8')
-        scale_filter = res.replace('x', ':') if 'x' in res else res
 
-        # GPU V4L2 M2M hardware decoder + fast DCT + fast_bilinear
+        # Garantizar que no queden procesos MJPEG duplicados previos
+        aniquilar("mjpeg")
+
+        scale_filter = res.replace('x', ':') if 'x' in res else res
+        vf_filter = f'fps={fps}' if res == 'native' else f'fps={fps},scale={scale_filter}:flags=fast_bilinear'
+
+        # GPU V4L2 M2M hardware decoder + 1 thread cap + fast DCT
         cmd = [
             'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_MJPEG_LOGLEVEL,
+            '-threads', '1',
             '-rtsp_transport', 'tcp',
             '-fflags', '+genpts+igndts',
             '-analyzeduration', '500000', '-probesize', '500000',
             '-c:v', 'h264_v4l2m2m',
             '-i', RTSP_LOCAL,
-            '-vf', f'fps={fps},scale={scale_filter}:flags=fast_bilinear',
+            '-vf', vf_filter,
             '-pix_fmt', 'yuvj420p',
             '-c:v', 'mjpeg', '-dct', 'fastint', '-q:v', str(quality),
             '-an',
@@ -318,12 +324,9 @@ def _ffmpeg_mjpeg_generator():
         ]
         proc = None
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
-            )
+            w = manager.start('mjpeg', cmd)
+            PROCESOS["mjpeg"] = w
+            proc = w.proc
             buffer = bytearray()
             logger.info(f"[MJPEG-Gen] Cliente conectado -> Activando FFmpeg GPU (Res: {res}, FPS: {fps})...")
             last_client_check = time.time()
@@ -340,6 +343,7 @@ def _ffmpeg_mjpeg_generator():
 
                     if idle_seconds >= 5:
                         logger.info("[MJPEG-Gen] 0 clientes activos por 5s. Apagando FFmpeg (0% CPU).")
+                        aniquilar("mjpeg")
                         break
 
                 chunk = proc.stdout.read(4096)
@@ -360,12 +364,7 @@ def _ffmpeg_mjpeg_generator():
         except Exception as e:
             logger.error(f"[MJPEG-Gen] Error en subproceso FFmpeg: {e}")
         finally:
-            if proc:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=2)
-                except Exception:
-                    pass
+            aniquilar("mjpeg")
             with FRAME_LOCK:
                 LATEST_JPEG_FRAME = None
 
