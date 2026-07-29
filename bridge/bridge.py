@@ -285,7 +285,7 @@ def iniciar_maestro():
         '-f', 'mpegts', '-i', FIFO_PATH,
         '-c:v', 'copy',
         '-bsf:v', 'h264_mp4toannexb,dump_extra=keyframe',
-        '-c:a', 'copy',
+        '-c:a', 'aac', '-b:a', '64k',
         '-f', 'rtsp', '-rtsp_transport', 'tcp', RTSP_LOCAL
     ]
     w = manager.start('maestro', cmd)
@@ -493,10 +493,10 @@ def lanzar_fuente(origen, es_url=True):
         cmd += ['-use_wallclock_as_timestamps', '1']
         if FFMPEG_RW_TIMEOUT:
             cmd += ['-rw_timeout', str(FFMPEG_RW_TIMEOUT)]
-        cmd += ['-i', origen, '-c:v', 'copy', '-an']
+        cmd += ['-i', origen, '-c:v', 'copy', '-c:a', 'copy']
     else:
         # Use -re and +genpts to loop placeholder video seamlessly with monotonic timestamps
-        cmd += ['-re', '-stream_loop', '-1', '-i', origen, '-fflags', '+genpts+igndts', '-c:v', 'copy', '-an']
+        cmd += ['-re', '-stream_loop', '-1', '-i', origen, '-fflags', '+genpts+igndts', '-c:v', 'copy', '-c:a', 'copy']
     cmd += ['-f', 'mpegts', FIFO_PATH]
     w = manager.start('fuente', cmd)
     PROCESOS["fuente"] = w

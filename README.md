@@ -48,8 +48,9 @@ flowchart TD
 
 ### Principales Funcionalidades:
 - **Doble motor de retransmisión:**
-  - **Maestro RTSP/HLS:** Transmisión de alta definición 1080p sin pérdida de calidad (copia directa H.264).
+  - **Maestro RTSP/HLS:** Transmisión de alta definición 1080p (copia directa H.264) con canal de audio AAC integrado.
   - **Servidor MJPEG Integrado (Puerto 8080):** Servidor HTTP reentrante para clientes antiguos (como TinyCam Pro o tablets legacy).
+- **Audio Integrado (RTSP y HLS):** Transmisión simultánea de video y audio AAC (16 kHz) sobre RTSP (`:8554`) y HLS (`:8888`) a consumo de CPU ínfimo (<0.5%).
 - **Fallback Automático (Sin señal):** Cuando la cámara se desconecta o pierde la red, el sistema cambia instantáneamente a un video en bucle continuo (`assets/reconnecting.mp4`). En cuanto la cámara responde, conmuta de nuevo a la señal en vivo sin reiniciar todo el stack.
 - **Grabación Continua por Segmentos:** Si se habilita `GRABAR_VIDEO=true`, graba segmentos `.ts` de duración configurable en `/app/grabaciones`.
 - **Rotación y Retención Automática de Logs y Grabaciones:**
