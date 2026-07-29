@@ -263,7 +263,7 @@ def iniciar_maestro():
         '-fflags', '+genpts+igndts+flush_packets',
         '-f', 'mpegts', '-i', FIFO_PATH,
         '-c:v', 'copy',
-        '-bsf:v', 'h264_mp4toannexb,dump_extra',
+        '-bsf:v', 'h264_mp4toannexb,dump_extra=keyframe',
         '-c:a', 'copy',
         '-f', 'rtsp', '-rtsp_transport', 'tcp', RTSP_LOCAL
     ]
@@ -279,86 +279,68 @@ FRAME_LOCK = threading.Lock()
 CLIENT_LOCK = threading.Lock()
 
 def _ffmpeg_mjpeg_generator():
-    """Hilo de fondo que ejecuta FFmpeg On-Demand sólo cuando hay clientes activos."""
+    """Hilo de fondo que mantiene el fotograma JPEG más reciente listo en memoria con consumo ultra-bajo."""
     global LATEST_JPEG_FRAME
-    logger.info("[MJPEG-Gen] Generador de fotogramas On-Demand listo.")
+    logger.info("[MJPEG-Gen] Generador de fotogramas JPEG listo.")
 
     while not shutdown_event.is_set():
-        with CLIENT_LOCK:
-            has_clients = ACTIVE_CLIENTS > 0
+        if _wait_rtsp_ready(max_wait_s=5, sleep_s=0.5):
+            reload_env()
+            res = get_env_var('MJPEG_RES', '640x360')
+            fps = get_env_var('MJPEG_FPS', '10')
+            quality = get_env_var('MJPEG_QUALITY', '8')
+            scale_filter = res.replace('x', ':') if 'x' in res else res
 
-        if not has_clients:
-            time.sleep(1)
-            continue
+            # fps antes de scale para reducir trabajo de escalado al 33% + fast_bilinear
+            cmd = [
+                'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_MJPEG_LOGLEVEL,
+                '-rtsp_transport', 'tcp',
+                '-fflags', '+genpts+igndts',
+                '-analyzeduration', '1000000', '-probesize', '1000000',
+                '-i', RTSP_LOCAL,
+                '-vf', f'fps={fps},scale={scale_filter}:flags=fast_bilinear',
+                '-c:v', 'mjpeg', '-q:v', str(quality),
+                '-an',
+                '-f', 'image2pipe', '-'
+            ]
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+                buffer = bytearray()
+                logger.info(f"[MJPEG-Gen] Generador activo (Res: {res}, FPS: {fps}, Quality: {quality})...")
 
-        if not _wait_rtsp_ready(max_wait_s=5, sleep_s=0.5):
-            time.sleep(2)
-            continue
-
-        reload_env()
-        res = get_env_var('MJPEG_RES', '640x360')
-        fps = get_env_var('MJPEG_FPS', '10')
-        quality = get_env_var('MJPEG_QUALITY', '8')
-        scale_filter = res.replace('x', ':') if 'x' in res else res
-
-        # fps antes de scale para reducir trabajo de escalado al 33% + fast_bilinear
-        cmd = [
-            'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_MJPEG_LOGLEVEL,
-            '-rtsp_transport', 'tcp',
-            '-i', RTSP_LOCAL,
-            '-vf', f'fps={fps},scale={scale_filter}:flags=fast_bilinear',
-            '-c:v', 'mjpeg', '-q:v', str(quality),
-            '-an',
-            '-f', 'image2pipe', '-'
-        ]
-        proc = None
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True
-            )
-            buffer = bytearray()
-            logger.info(f"[MJPEG-Gen] Activando FFmpeg On-Demand (Res: {res}, FPS: {fps}, Quality: {quality})...")
-
-            while not shutdown_event.is_set() and proc.poll() is None:
-                with CLIENT_LOCK:
-                    if ACTIVE_CLIENTS == 0:
-                        logger.info("[MJPEG-Gen] 0 clientes activos. Deteniendo FFmpeg para ahorrar CPU.")
+                while not shutdown_event.is_set() and proc.poll() is None:
+                    chunk = proc.stdout.read(4096)
+                    if not chunk:
                         break
+                    buffer.extend(chunk)
+                    while True:
+                        a = buffer.find(b'\xff\xd8')
+                        b = buffer.find(b'\xff\xd9')
+                        if a != -1 and b != -1 and b > a:
+                            jpg = bytes(buffer[a:b+2])
+                            buffer = buffer[b+2:]
+                            with FRAME_LOCK:
+                                LATEST_JPEG_FRAME = jpg
+                        else:
+                            break
 
-                chunk = proc.stdout.read(4096)
-                if not chunk:
-                    break
-                buffer.extend(chunk)
-                while True:
-                    a = buffer.find(b'\xff\xd8')
-                    b = buffer.find(b'\xff\xd9')
-                    if a != -1 and b != -1 and b > a:
-                        jpg = bytes(buffer[a:b+2])
-                        buffer = buffer[b+2:]
-                        with FRAME_LOCK:
-                            LATEST_JPEG_FRAME = jpg
-                    else:
-                        break
+            except Exception as e:
+                logger.error(f"[MJPEG-Gen] Error en subproceso FFmpeg: {e}")
+            finally:
+                if proc:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
 
-        except Exception as e:
-            logger.error(f"[MJPEG-Gen] Error en subproceso FFmpeg: {e}")
-        finally:
-            if proc:
-                try:
-                    stderr_out = ""
-                    if proc.stderr:
-                        stderr_out = proc.stderr.read().decode(errors='ignore')
-                    proc.terminate()
-                    proc.wait(timeout=2)
-                    if proc.returncode not in (0, None, -15, -9) and stderr_out:
-                        logger.warning(f"[MJPEG-Gen] FFmpeg finalizó con código {proc.returncode}: {stderr_out.strip()[:200]}")
-                except Exception:
-                    pass
-
-        # PREVENIR SPIN-LOOP: siempre dormir al menos 2 segundos si el proceso finaliza
+        # PREVENIR SPIN-LOOP: dormir 2 segundos si el proceso finaliza
         time.sleep(2)
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -380,10 +362,6 @@ class MJPEGRequestHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        global ACTIVE_CLIENTS
-        with CLIENT_LOCK:
-            ACTIVE_CLIENTS += 1
-
         self.send_response(200)
         self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0')
@@ -398,25 +376,21 @@ class MJPEGRequestHandler(http.server.BaseHTTPRequestHandler):
             update_interval = 0.05
 
         last_sent = None
-        try:
-            while not shutdown_event.is_set():
-                with FRAME_LOCK:
-                    frame = LATEST_JPEG_FRAME
-                if frame and frame != last_sent:
-                    try:
-                        self.wfile.write(b'--frame\r\n')
-                        self.wfile.write(b'Content-Type: image/jpeg\r\n')
-                        self.wfile.write(f'Content-Length: {len(frame)}\r\n\r\n'.encode('ascii'))
-                        self.wfile.write(frame)
-                        self.wfile.write(b'\r\n')
-                        self.wfile.flush()
-                        last_sent = frame
-                    except (BrokenPipeError, ConnectionResetError, socket.error):
-                        break
-                time.sleep(update_interval)
-        finally:
-            with CLIENT_LOCK:
-                ACTIVE_CLIENTS = max(0, ACTIVE_CLIENTS - 1)
+        while not shutdown_event.is_set():
+            with FRAME_LOCK:
+                frame = LATEST_JPEG_FRAME
+            if frame and frame != last_sent:
+                try:
+                    self.wfile.write(b'--frame\r\n')
+                    self.wfile.write(b'Content-Type: image/jpeg\r\n')
+                    self.wfile.write(f'Content-Length: {len(frame)}\r\n\r\n'.encode('ascii'))
+                    self.wfile.write(frame)
+                    self.wfile.write(b'\r\n')
+                    self.wfile.flush()
+                    last_sent = frame
+                except (BrokenPipeError, ConnectionResetError, socket.error):
+                    break
+            time.sleep(update_interval)
 
 def loop_servidor_mjpeg():
     """
