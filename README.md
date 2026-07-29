@@ -106,8 +106,15 @@ cp .env.example .env
 | `LOG_MAX_SIZE_MB` | `5` | Tamaño máximo por archivo de log (MB) antes de rotar. |
 | `LOG_BACKUP_COUNT` | `3` | Número de archivos de respaldo rotativos a conservar (`bridge.log.1`, etc.). |
 | `LOG_RETENTION_DAYS`| `7` | Días de retención para eliminar logs rotados antiguos. |
+| `MJPEG_RES` | `640x360` | Resolución del stream MJPEG (ej. `640x360`, `1280x720`). |
+| `MJPEG_FPS` | `10` | Fotogramas por segundo para el servidor MJPEG (ej. `10`, `15`). |
+| `MJPEG_QUALITY` | `8` | Calidad de compresión JPEG (Rango 2-31. Menor número = mayor calidad). |
+| `MJPEG_UPDATE_INTERVAL`| `0.05` | Intervalo de refresco de envío por cliente (en segundos, ej. `0.05` = 50ms). |
 | `FFMPEG_LOGLEVEL` | `error` | Nivel de verbosidad de FFmpeg para el proceso fuente y maestro. |
 | `FFMPEG_MJPEG_LOGLEVEL`| `error` | Nivel de verbosidad para la emisión MJPEG. |
+
+> ⚠️ **ADVERTENCIA DE RENDIMIENTO PARA RASPBERRY PI 4:**  
+> Aumentar la resolución (ej. a `1920x1080`), incrementar los FPS (ej. a `30`) o reducir la compresión (`MJPEG_QUALITY=2`) incrementará drásticamente el consumo de CPU de la Raspberry Pi 4 y el consumo de ancho de banda de red por cada tablet o cliente conectado simultáneamente. Se recomiendan los valores por defecto (`640x360`, `10 FPS`, `Quality 8`) para mantener una excelente fluidez sin saturar el sistema.
 
 ---
 

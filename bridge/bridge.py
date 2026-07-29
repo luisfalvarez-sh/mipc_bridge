@@ -285,12 +285,20 @@ def _ffmpeg_mjpeg_generator():
 
     while not shutdown_event.is_set():
         if _wait_rtsp_ready(max_wait_s=10, sleep_s=1):
+            reload_env()
+            res = get_env_var('MJPEG_RES', '640x360')
+            fps = get_env_var('MJPEG_FPS', '10')
+            quality = get_env_var('MJPEG_QUALITY', '8')
+
+            # Reemplazar 'x' por ':' para el filtro scale si viene en formato WxH (ej. 640x360 -> 640:360)
+            scale_filter = res.replace('x', ':') if 'x' in res else res
+
             cmd = [
                 'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_MJPEG_LOGLEVEL,
                 '-rtsp_transport', 'tcp',
                 '-i', RTSP_LOCAL,
-                '-vf', 'scale=640:360,fps=10',
-                '-c:v', 'mjpeg', '-q:v', '8',
+                '-vf', f'scale={scale_filter},fps={fps}',
+                '-c:v', 'mjpeg', '-q:v', str(quality),
                 '-an',
                 '-f', 'image2pipe', '-'
             ]
@@ -317,7 +325,7 @@ def _ffmpeg_mjpeg_generator():
                             with FRAME_LOCK:
                                 LATEST_JPEG_FRAME = jpg
                             if not first_frame_logged:
-                                logger.info("[MJPEG-Gen] ¡Primer fotograma JPEG capturado con éxito!")
+                                logger.info(f"[MJPEG-Gen] ¡Primer fotograma JPEG capturado! (Res: {res}, FPS: {fps}, Quality: {quality})")
                                 first_frame_logged = True
                         else:
                             break
@@ -358,6 +366,11 @@ class MJPEGRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
 
+        try:
+            update_interval = float(get_env_var('MJPEG_UPDATE_INTERVAL', '0.05'))
+        except (ValueError, TypeError):
+            update_interval = 0.05
+
         last_sent = None
         while not shutdown_event.is_set():
             with FRAME_LOCK:
@@ -373,7 +386,7 @@ class MJPEGRequestHandler(http.server.BaseHTTPRequestHandler):
                     last_sent = frame
                 except (BrokenPipeError, ConnectionResetError, socket.error):
                     break
-            time.sleep(0.05)
+            time.sleep(update_interval)
 
 def loop_servidor_mjpeg():
     """
