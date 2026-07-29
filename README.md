@@ -101,6 +101,7 @@ cp .env.example .env
 | `CAM_USER` | **Requerido** | Usuario de acceso a la cámara. |
 | `CAM_PASS` | **Requerido** | Contraseña de la cámara. |
 | `CAM_PORT` | `7010` | Puerto de control de la cámara MIPC. |
+| `ENABLE_AUDIO` | `true` | Activa (`true`) o desactiva (`false`) el canal de audio en RTSP y HLS. |
 | `GRABAR_VIDEO` | `false` | Activa (`true`) o desactiva (`false`) la grabación continua. |
 | `DIAS_RETENCION` | `7` | Días de retención para autolimpieza de grabaciones `.ts`. |
 | `MINUTOS_SEGMENTO` | `15` | Duración en minutos de cada segmento de video grabado. |

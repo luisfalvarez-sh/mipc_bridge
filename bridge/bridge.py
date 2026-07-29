@@ -279,13 +279,17 @@ def iniciar_maestro():
     """
     aniquilar("maestro")
     logger.info("[*] Iniciando Maestro 1080p (Copia Directa)...")
+    reload_env()
+    enable_audio = get_env_bool('ENABLE_AUDIO', default=True)
+    audio_flags = ['-c:a', 'aac', '-b:a', '64k'] if enable_audio else ['-an']
+
     cmd = [
         'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_LOGLEVEL,
         '-fflags', '+genpts+igndts+flush_packets',
         '-f', 'mpegts', '-i', FIFO_PATH,
         '-c:v', 'copy',
         '-bsf:v', 'h264_mp4toannexb,dump_extra=keyframe',
-        '-c:a', 'aac', '-b:a', '64k',
+    ] + audio_flags + [
         '-f', 'rtsp', '-rtsp_transport', 'tcp', RTSP_LOCAL
     ]
     w = manager.start('maestro', cmd)
@@ -488,15 +492,19 @@ def loop_servidor_mjpeg():
 def lanzar_fuente(origen, es_url=True):
     aniquilar("fuente")
     logger.info(f"[*] Lanzando fuente: {'Cámara' if es_url else 'Espera'}")
+    reload_env()
+    enable_audio = get_env_bool('ENABLE_AUDIO', default=True)
+    audio_flags = ['-c:a', 'copy'] if enable_audio else ['-an']
+
     cmd = ['ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_LOGLEVEL]
     if es_url:
         cmd += ['-use_wallclock_as_timestamps', '1']
         if FFMPEG_RW_TIMEOUT:
             cmd += ['-rw_timeout', str(FFMPEG_RW_TIMEOUT)]
-        cmd += ['-i', origen, '-c:v', 'copy', '-c:a', 'copy']
+        cmd += ['-i', origen, '-c:v', 'copy'] + audio_flags
     else:
         # Use -re and +genpts to loop placeholder video seamlessly with monotonic timestamps
-        cmd += ['-re', '-stream_loop', '-1', '-i', origen, '-fflags', '+genpts+igndts', '-c:v', 'copy', '-c:a', 'copy']
+        cmd += ['-re', '-stream_loop', '-1', '-i', origen, '-fflags', '+genpts+igndts', '-c:v', 'copy'] + audio_flags
     cmd += ['-f', 'mpegts', FIFO_PATH]
     w = manager.start('fuente', cmd)
     PROCESOS["fuente"] = w
