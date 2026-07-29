@@ -271,73 +271,78 @@ def iniciar_maestro():
     PROCESOS["maestro"] = w
 
 # ==========================================
-#  SERVIDOR HTTP MJPEG MULTICLIENTE (v31.10)
+#  SERVIDOR HTTP MJPEG MULTICLIENTE ON-DEMAND (v31.10)
 # ==========================================
 LATEST_JPEG_FRAME = None
+ACTIVE_CLIENTS = 0
 FRAME_LOCK = threading.Lock()
-FRAME_EVENT = threading.Event()
+CLIENT_LOCK = threading.Lock()
 
 def _ffmpeg_mjpeg_generator():
-    """Hilo de fondo que ejecuta FFmpeg para decodificar RTSP y emitir fotogramas JPEG en memoria."""
+    """Hilo de fondo que ejecuta FFmpeg On-Demand sólo cuando hay clientes activos."""
     global LATEST_JPEG_FRAME
-    logger.info("[MJPEG-Gen] Iniciando generador de fotogramas JPEG...")
-    first_frame_logged = False
+    logger.info("[MJPEG-Gen] Generador de fotogramas On-Demand listo.")
 
     while not shutdown_event.is_set():
-        if _wait_rtsp_ready(max_wait_s=10, sleep_s=1):
-            reload_env()
-            res = get_env_var('MJPEG_RES', '640x360')
-            fps = get_env_var('MJPEG_FPS', '10')
-            quality = get_env_var('MJPEG_QUALITY', '8')
+        with CLIENT_LOCK:
+            has_clients = ACTIVE_CLIENTS > 0
 
-            # Reemplazar 'x' por ':' para el filtro scale si viene en formato WxH (ej. 640x360 -> 640:360)
-            scale_filter = res.replace('x', ':') if 'x' in res else res
+        if has_clients:
+            if _wait_rtsp_ready(max_wait_s=5, sleep_s=0.5):
+                reload_env()
+                res = get_env_var('MJPEG_RES', '640x360')
+                fps = get_env_var('MJPEG_FPS', '10')
+                quality = get_env_var('MJPEG_QUALITY', '8')
+                scale_filter = res.replace('x', ':') if 'x' in res else res
 
-            cmd = [
-                'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_MJPEG_LOGLEVEL,
-                '-rtsp_transport', 'tcp',
-                '-i', RTSP_LOCAL,
-                '-vf', f'scale={scale_filter},fps={fps}',
-                '-c:v', 'mjpeg', '-q:v', str(quality),
-                '-an',
-                '-f', 'image2pipe', '-'
-            ]
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True
-                )
-                buffer = bytearray()
-
-                while not shutdown_event.is_set() and proc.poll() is None:
-                    chunk = proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    buffer.extend(chunk)
-                    while True:
-                        a = buffer.find(b'\xff\xd8')
-                        b = buffer.find(b'\xff\xd9')
-                        if a != -1 and b != -1 and b > a:
-                            jpg = bytes(buffer[a:b+2])
-                            buffer = buffer[b+2:]
-                            with FRAME_LOCK:
-                                LATEST_JPEG_FRAME = jpg
-                            if not first_frame_logged:
-                                logger.info(f"[MJPEG-Gen] ¡Primer fotograma JPEG capturado! (Res: {res}, FPS: {fps}, Quality: {quality})")
-                                first_frame_logged = True
-                        else:
-                            break
-
+                cmd = [
+                    'ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_MJPEG_LOGLEVEL,
+                    '-rtsp_transport', 'tcp',
+                    '-c:v', 'h264_v4l2m2m', '-i', RTSP_LOCAL,
+                    '-vf', f'scale={scale_filter},fps={fps}',
+                    '-c:v', 'mjpeg', '-q:v', str(quality),
+                    '-an',
+                    '-f', 'image2pipe', '-'
+                ]
                 try:
-                    proc.terminate()
-                    proc.wait(timeout=2)
-                except Exception:
-                    pass
-            except Exception as e:
-                logger.error(f"[MJPEG-Gen] Error en proceso FFmpeg: {e}")
-        time.sleep(2)
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True
+                    )
+                    buffer = bytearray()
+                    logger.info(f"[MJPEG-Gen] Iniciando FFmpeg GPU (Res: {res}, FPS: {fps}, Quality: {quality})...")
+
+                    while not shutdown_event.is_set() and proc.poll() is None:
+                        with CLIENT_LOCK:
+                            if ACTIVE_CLIENTS == 0:
+                                logger.info("[MJPEG-Gen] 0 clientes conectados. Deteniendo FFmpeg para ahorrar CPU.")
+                                break
+
+                        chunk = proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        buffer.extend(chunk)
+                        while True:
+                            a = buffer.find(b'\xff\xd8')
+                            b = buffer.find(b'\xff\xd9')
+                            if a != -1 and b != -1 and b > a:
+                                jpg = bytes(buffer[a:b+2])
+                                buffer = buffer[b+2:]
+                                with FRAME_LOCK:
+                                    LATEST_JPEG_FRAME = jpg
+                            else:
+                                break
+
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.error(f"[MJPEG-Gen] Error en proceso FFmpeg: {e}")
+        time.sleep(1)
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
@@ -358,6 +363,10 @@ class MJPEGRequestHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        global ACTIVE_CLIENTS
+        with CLIENT_LOCK:
+            ACTIVE_CLIENTS += 1
+
         self.send_response(200)
         self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0')
@@ -372,21 +381,25 @@ class MJPEGRequestHandler(http.server.BaseHTTPRequestHandler):
             update_interval = 0.05
 
         last_sent = None
-        while not shutdown_event.is_set():
-            with FRAME_LOCK:
-                frame = LATEST_JPEG_FRAME
-            if frame and frame != last_sent:
-                try:
-                    self.wfile.write(b'--frame\r\n')
-                    self.wfile.write(b'Content-Type: image/jpeg\r\n')
-                    self.wfile.write(f'Content-Length: {len(frame)}\r\n\r\n'.encode('ascii'))
-                    self.wfile.write(frame)
-                    self.wfile.write(b'\r\n')
-                    self.wfile.flush()
-                    last_sent = frame
-                except (BrokenPipeError, ConnectionResetError, socket.error):
-                    break
-            time.sleep(update_interval)
+        try:
+            while not shutdown_event.is_set():
+                with FRAME_LOCK:
+                    frame = LATEST_JPEG_FRAME
+                if frame and frame != last_sent:
+                    try:
+                        self.wfile.write(b'--frame\r\n')
+                        self.wfile.write(b'Content-Type: image/jpeg\r\n')
+                        self.wfile.write(f'Content-Length: {len(frame)}\r\n\r\n'.encode('ascii'))
+                        self.wfile.write(frame)
+                        self.wfile.write(b'\r\n')
+                        self.wfile.flush()
+                        last_sent = frame
+                    except (BrokenPipeError, ConnectionResetError, socket.error):
+                        break
+                time.sleep(update_interval)
+        finally:
+            with CLIENT_LOCK:
+                ACTIVE_CLIENTS = max(0, ACTIVE_CLIENTS - 1)
 
 def loop_servidor_mjpeg():
     """
