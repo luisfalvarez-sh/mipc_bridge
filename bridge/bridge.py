@@ -190,10 +190,22 @@ def _is_running(name):
     except Exception:
         return False
 
-def check_port(ip, port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(1.2)
-        return s.connect_ex((ip, port)) == 0
+def check_port(ip, port, timeout=1.5):
+    """
+    Comprueba conectividad TCP.
+    Intenta el puerto especificado (ej. 80 para HTTP de cámara o 8554 para MediaMTX).
+    Si el puerto no es 80 ni 8554, también intenta puerto 80 (HTTP de cámara MIPC).
+    """
+    ports_to_try = [port]
+    if port not in (80, 8554):
+        ports_to_try.append(80)
+    for p in ports_to_try:
+        try:
+            with socket.create_connection((ip, p), timeout=timeout):
+                return True
+        except Exception:
+            pass
+    return False
 
 def _rtsp_ready():
     cmd = [
@@ -498,10 +510,8 @@ def lanzar_fuente(origen, es_url=True):
 
     cmd = ['ffmpeg', '-y', '-nostdin', '-loglevel', FFMPEG_LOGLEVEL]
     if es_url:
-        cmd += ['-use_wallclock_as_timestamps', '1']
-        if FFMPEG_RW_TIMEOUT:
-            cmd += ['-rw_timeout', str(FFMPEG_RW_TIMEOUT)]
-        cmd += ['-i', origen, '-c:v', 'copy'] + audio_flags
+        rw_timeout = FFMPEG_RW_TIMEOUT or '5000000'
+        cmd += ['-use_wallclock_as_timestamps', '1', '-rw_timeout', str(rw_timeout), '-fflags', '+genpts+igndts', '-i', origen, '-c:v', 'copy'] + audio_flags
     else:
         # Use -re and +genpts to loop placeholder video seamlessly with monotonic timestamps
         cmd += ['-re', '-stream_loop', '-1', '-i', origen, '-fflags', '+genpts+igndts', '-c:v', 'copy'] + audio_flags

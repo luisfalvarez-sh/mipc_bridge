@@ -8,6 +8,8 @@ services:
       - "8888:8888"   # HLS (Tablet Nueva / Web)
     environment:
       - MTX_PROTOCOLS=tcp
+      - MTX_HLSSEGMENTDURATION=${HLS_SEGMENT_DURATION:-2s}
+      - MTX_HLSPARTDURATION=${HLS_PART_DURATION:-500ms}
       - TZ=America/Guatemala
 
   bridge:

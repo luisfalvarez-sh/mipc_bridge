@@ -111,7 +111,8 @@ cp .env.example .env
 | `MJPEG_RES` | `640x360` | Resolución del stream MJPEG (ej. `640x360`, `1024x576`, o `native`). |
 | `MJPEG_FPS` | `2` | Fotogramas por segundo del servidor MJPEG (ej. `2` a `5`). |
 | `MJPEG_QUALITY` | `8` | Calidad de compresión JPEG (Rango 2-31; `8` a `12` = balance óptimo). |
-| `MJPEG_UPDATE_INTERVAL`| `0.1` | Intervalo de refresco de envío por cliente (en segundos, ej. `0.1` = 10 FPS max envío). |
+| `HLS_SEGMENT_DURATION` | `2s` | Duración de segmentos HLS (2s-3s para evitar parpadeos de carga en navegador). |
+| `HLS_PART_DURATION` | `500ms` | Duración de micro-partes HLS. |
 | `FFMPEG_LOGLEVEL` | `error` | Nivel de verbosidad de FFmpeg para el proceso fuente y maestro. |
 | `FFMPEG_MJPEG_LOGLEVEL`| `error` | Nivel de verbosidad para la emisión MJPEG. |
 
