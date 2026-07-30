@@ -126,6 +126,49 @@ cp .env.example .env
 
 ---
 
+## 🖥️ Mapeo de Dispositivos GPU y Códecs en Raspberry Pi 4 (Proxmox LXC / Docker)
+
+### 1. Dispositivos de Aceleración por Hardware (Broadcom BCM2711 / VideoCore 6)
+Para que el contenedor tenga acceso directo a la GPU y a los decodificadores/codificadores por hardware V4L2 M2M en la Raspberry Pi 4, `docker-compose.yml` mapea los siguientes nodos:
+
+- `/dev/video10`, `/dev/video11`, `/dev/video12`: Decodificadores y codificadores de video por hardware V4L2 M2M (`bcm2835-codec`).
+- `/dev/dri`: Nodos de renderizado DRM/KMS para aceleración por GPU VideoCore VI (`card1`, `renderD128`).
+- `/dev/vcsm-cma`: Asignador de memoria compartida continua (CMA / Contiguous Memory Allocator) entre la CPU y la GPU.
+- `/dev/vchiq`: Interfaz de comandos del firmware VideoCore de Broadcom.
+- `/dev/fb0`: Framebuffer del sistema.
+
+#### Mapeo necesario para Proxmox LXC (`/etc/pve/lxc/<ID>.conf`):
+Si ejecutas Docker dentro de un contenedor LXC en Proxmox VE, agrega estas líneas al archivo de configuración del LXC:
+
+```ini
+# Aceleración por GPU y V4L2 M2M (Raspberry Pi 4)
+lxc.cgroup2.devices.allow: c 226:* rwm
+lxc.cgroup2.devices.allow: c 239:* rwm
+lxc.cgroup2.devices.allow: c 81:* rwm
+lxc.mount.entry: /dev/dri dev/dri none bind,optional,create=dir
+lxc.mount.entry: /dev/vchiq dev/vchiq none bind,optional,create=file
+lxc.mount.entry: /dev/vcsm-cma dev/vcsm-cma none bind,optional,create=file
+lxc.mount.entry: /dev/video10 dev/video10 none bind,optional,create=file
+lxc.mount.entry: /dev/video11 dev/video11 none bind,optional,create=file
+lxc.mount.entry: /dev/video12 dev/video12 none bind,optional,create=file
+lxc.mount.entry: /dev/fb0 dev/fb0 none bind,optional,create=file
+```
+
+---
+
+### 2. Códecs y Formatos de Copia Utilizados por FFmpeg
+
+- **Stream Maestro H.264 (RTSP / HLS / Grabaciones)**:
+  - **Códec de Video**: Copia Directa (`-c:v copy`) sin re-codificación en CPU. Consumo de CPU **~0.1%**.
+  - **Bitstream Filter**: `-bsf:v h264_mp4toannexb,dump_extra=keyframe` para re-empaquetar tramas H.264 al formato Annex-B asegurando encabezados SPS/PPS antes de cada I-frame (Keyframe).
+  - **Códec de Audio**: Recodificación ligera a AAC (`-c:a aac -b:a 64k`) o copia directa (`-c:a copy`) según la opción `ENABLE_AUDIO`.
+
+- **Servidor MJPEG HTTP (Puerto 8080 - Legacy)**:
+  - **Decodificador por Hardware (GPU)**: `-c:v h264_v4l2m2m` (utiliza el decodificador H.264 por hardware Broadcom V4L2 de la Raspberry Pi 4).
+  - **Codificador MJPEG y DCT**: `-c:v mjpeg -dct fastint -q:v {quality}` con algoritmo de DCT rápido entero para mantener el consumo de CPU a solo **~12% de 1 solo núcleo**.
+
+---
+
 ## 🚀 Despliegue con Docker Compose
 
 Desde la raíz del proyecto, ejecuta:
