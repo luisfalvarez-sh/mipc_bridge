@@ -164,5 +164,5 @@ print('RTMP Stream URL:', c.get_rtmp_stream())
 
 ## 🔒 Créditos y Licencia
 
-* **Librería MIPC:** Integración de protocolo MIPC basada en [mipc-camera-client-python](https://github.com/pan-maruda/mipc-camera-client-python) de `pan-maruda`.
-* **Licencia:** MIT License (Ver [LICENSE](file:///opt/mipc-bridge/LICENSE)).
+* **Librería MIPC:** Integración de protocolo MIPC basada en [mipc-camera-client-python](https://github.com/pan-maruda/mipc-camera-client-python) por `Pan Maruda` (Licencia BSD 3-Clause).
+* **Licencia del Proyecto:** MIT License para `mipc-bridge` (Ver [LICENSE](file:///opt/mipc-bridge/LICENSE) para el texto completo y licencias de terceros).
